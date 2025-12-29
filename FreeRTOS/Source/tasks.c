@@ -318,6 +318,14 @@ typedef struct tskTaskControlBlock       /* The old naming convention is used to
     #if ( configUSE_POSIX_ERRNO == 1 )
         int iTaskErrno;
     #endif
+
+    #if ( configUSE_GREEN_SCHEDULER == 1 )
+    uint32_t ulEnergyEstimate;      /* Estimated energy cost of the task */
+    uint32_t ulCpuTime;             /* Accumulated CPU execution time */
+    uint8_t  ucGreenClass;          /* Task energy class (e.g. critical, normal, deferrable) */
+    uint32_t ulEnergyScore;         /* Tracks the energy efficiency of the task */
+    uint32_t ulLastRunTime;         /* Timestamp of the last time the task ran */
+    #endif
 } tskTCB;
 
 /* The old tskTCB name is maintained above then typedefed to the new TCB_t name
@@ -753,6 +761,15 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
                     vPortFree( pxNewTCB );
                     pxNewTCB = NULL;
                 }
+                else
+                {
+                    #if ( configUSE_GREEN_SCHEDULER == 1 )
+                        pxNewTCB->ulEnergyEstimate = 0;
+                        pxNewTCB->ulCpuTime      = 0;
+                        pxNewTCB->ucGreenClass   = 0;
+                    #endif
+                }
+            }
             }
         }
         #else /* portSTACK_GROWTH */
@@ -773,6 +790,13 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
 
                     /* Store the stack location in the TCB. */
                     pxNewTCB->pxStack = pxStack;
+                    
+                    #if ( configUSE_GREEN_SCHEDULER == 1 )
+                        pxNewTCB->ulEnergyEstimate = 0;   // Estimated energy cost of the task
+                        pxNewTCB->ulCpuTime      = 0;     // Accumulated CPU execution time
+                        pxNewTCB->ucGreenClass   = 0;     // Task energy class (e.g., critical, normal, deferrable)
+                    #endif
+
                 }
                 else
                 {
@@ -2738,6 +2762,31 @@ BaseType_t xTaskIncrementTick( void )
          * delayed lists if it wraps to 0. */
         xTickCount = xConstTickCount;
 
+        #if ( configUSE_GREEN_SCHEDULER == 1 )
+            if( pxCurrentTCB != NULL )
+            {
+                // Increment CPU time
+                pxCurrentTCB->ulCpuTime += 1;
+
+                // Update energy estimate based on green class
+                switch( pxCurrentTCB->ucGreenClass )
+                {
+                    case 0: // CRITICAL
+                        pxCurrentTCB->ulEnergyEstimate += 2;
+                        break;
+                    case 1: // NORMAL
+                        pxCurrentTCB->ulEnergyEstimate += 1;
+                        break;
+                    case 2: // DEFERRABLE
+                        pxCurrentTCB->ulEnergyEstimate += 0;
+                        break;
+                    default:
+                        pxCurrentTCB->ulEnergyEstimate += 1;
+                        break;
+                }
+            }
+        #endif
+
         if( xConstTickCount == ( TickType_t ) 0U ) /*lint !e774 'if' does not always evaluate to false as it is looking for an overflow. */
         {
             taskSWITCH_DELAYED_LISTS();
@@ -3010,8 +3059,7 @@ void vTaskSwitchContext( void )
 {
     if( uxSchedulerSuspended != ( UBaseType_t ) pdFALSE )
     {
-        /* The scheduler is currently suspended - do not allow a context
-         * switch. */
+        /* The scheduler is currently suspended - do not allow a context switch. */
         xYieldPending = pdTRUE;
     }
     else
@@ -3027,42 +3075,71 @@ void vTaskSwitchContext( void )
                 ulTotalRunTime = portGET_RUN_TIME_COUNTER_VALUE();
             #endif
 
-            /* Add the amount of time the task has been running to the
-             * accumulated time so far.  The time the task started running was
-             * stored in ulTaskSwitchedInTime.  Note that there is no overflow
-             * protection here so count values are only valid until the timer
-             * overflows.  The guard against negative values is to protect
-             * against suspect run time stat counter implementations - which
-             * are provided by the application, not the kernel. */
             if( ulTotalRunTime > ulTaskSwitchedInTime )
             {
                 pxCurrentTCB->ulRunTimeCounter += ( ulTotalRunTime - ulTaskSwitchedInTime );
             }
-            else
-            {
-                mtCOVERAGE_TEST_MARKER();
-            }
 
             ulTaskSwitchedInTime = ulTotalRunTime;
         }
-        #endif /* configGENERATE_RUN_TIME_STATS */
+        #endif
 
-        /* Check for stack overflow, if configured. */
         taskCHECK_FOR_STACK_OVERFLOW();
 
-        /* Before the currently running task is switched out, save its errno. */
         #if ( configUSE_POSIX_ERRNO == 1 )
         {
             pxCurrentTCB->iTaskErrno = FreeRTOS_errno;
         }
         #endif
 
-        /* Select a new task to run using either the generic C or port
-         * optimised asm code. */
-        taskSELECT_HIGHEST_PRIORITY_TASK(); /*lint !e9079 void * is used as this macro is used with timers and co-routines too.  Alignment is known to be fine as the type of the pointer stored and retrieved is the same. */
+        /* ----------------- GREEN SCHEDULER INTEGRATION ----------------- */
+        #if ( configUSE_GREEN_SCHEDULER == 1 )
+
+            TCB_t *pxBestTask = NULL;
+            UBaseType_t uxLowestEnergy = UINT32_MAX;
+
+            for( UBaseType_t uxPriority = 0; uxPriority < configMAX_PRIORITIES; uxPriority++ )
+            {
+                List_t *pxList = &pxReadyTasksLists[ uxPriority ];
+                ListItem_t *pxIterator;
+
+                for( pxIterator = (ListItem_t *) listGET_HEAD_ENTRY( pxList );
+                     pxIterator != listGET_END_MARKER( pxList );
+                     pxIterator = listGET_NEXT( pxIterator ) )
+                {
+                    TCB_t *pxTask = (TCB_t *) listGET_LIST_ITEM_OWNER( pxIterator );
+
+                    if( pxTask->ucGreenClass == CRITICAL )
+                    {
+                        pxBestTask = pxTask;
+                        break; // Critical tasks always run first
+                    }
+                    else if( pxTask->ulEnergyEstimate < uxLowestEnergy )
+                    {
+                        uxLowestEnergy = pxTask->ulEnergyEstimate;
+                        pxBestTask = pxTask;
+                    }
+                }
+
+                if( pxBestTask != NULL && pxBestTask->ucGreenClass == CRITICAL )
+                {
+                    break; // stop searching lower priorities
+                }
+            }
+
+            if( pxBestTask != NULL )
+            {
+                pxCurrentTCB = pxBestTask;
+            }
+
+        #else
+            /* Original FreeRTOS scheduler selection */
+            taskSELECT_HIGHEST_PRIORITY_TASK();
+        #endif
+        /* --------------------------------------------------------------- */
+
         traceTASK_SWITCHED_IN();
 
-        /* After the new task is switched in, update the global errno. */
         #if ( configUSE_POSIX_ERRNO == 1 )
         {
             FreeRTOS_errno = pxCurrentTCB->iTaskErrno;
@@ -3071,13 +3148,12 @@ void vTaskSwitchContext( void )
 
         #if ( ( configUSE_NEWLIB_REENTRANT == 1 ) || ( configUSE_C_RUNTIME_TLS_SUPPORT == 1 ) )
         {
-            /* Switch C-Runtime's TLS Block to point to the TLS
-             * Block specific to this task. */
             configSET_TLS_BLOCK( pxCurrentTCB->xTLSBlock );
         }
         #endif
     }
 }
+
 /*-----------------------------------------------------------*/
 
 void vTaskPlaceOnEventList( List_t * const pxEventList,

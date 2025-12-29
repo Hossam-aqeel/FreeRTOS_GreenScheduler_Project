@@ -39,6 +39,7 @@
  * https://www.FreeRTOS.org/a00110.html
  *----------------------------------------------------------*/
 
+#define configUSE_GREEN_SCHEDULER 1
 #define configUSE_PREEMPTION					1
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION	1
 #define configUSE_IDLE_HOOK						1
