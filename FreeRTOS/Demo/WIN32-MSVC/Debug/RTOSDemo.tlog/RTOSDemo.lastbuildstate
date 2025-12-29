@@ -1,2 +1,2 @@
-PlatformToolSet=v143:VCToolArchitecture=Native32Bit:VCToolsVersion=14.44.35207:TargetPlatformVersion=10.0.26100.0:
-Debug|Win32|D:\Apps\FreeRTOS 2022\FreeRTOSv202212.01\FreeRTOS\Demo\WIN32-MSVC\|
+PlatformToolSet=v145:VCToolArchitecture=Native32Bit:VCToolsVersion=14.50.35717:VCServicingVersionCompilers=14.50.35721:TargetPlatformVersion=10.0.26100.0:
+Debug|Win32|D:\Studying\Fall 2025\ECEN427\FreeRTOS_GreenScheduler_Project\FreeRTOS\Demo\WIN32-MSVC\|

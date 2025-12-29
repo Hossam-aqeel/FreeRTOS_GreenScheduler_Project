@@ -40,6 +40,11 @@
  *----------------------------------------------------------*/
 
 #define configUSE_GREEN_SCHEDULER 1
+/* Green scheduler task classes */
+#define GREEN_CLASS_CRITICAL     0
+#define GREEN_CLASS_NORMAL       1
+#define GREEN_CLASS_DEFERRABLE   2
+
 #define configUSE_PREEMPTION					1
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION	1
 #define configUSE_IDLE_HOOK						1

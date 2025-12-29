@@ -1301,6 +1301,14 @@ typedef struct xSTATIC_TCB
     #if ( configUSE_POSIX_ERRNO == 1 )
         int iDummy22;
     #endif
+    #if ( configUSE_GREEN_SCHEDULER == 1 )
+    uint32_t ulDummyGreenEnergyEstimate;
+    uint32_t ulDummyGreenCpuTime;
+    uint8_t  ucDummyGreenClass;
+    uint8_t  ucDummyPadding[3]; /* alignment */
+    uint32_t ulDummyGreenEnergyScore;
+    uint32_t ulDummyGreenLastRunTime;
+    #endif
 } StaticTask_t;
 
 /*

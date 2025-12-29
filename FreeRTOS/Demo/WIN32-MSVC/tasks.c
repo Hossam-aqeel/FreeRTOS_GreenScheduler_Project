@@ -3109,7 +3109,7 @@ void vTaskSwitchContext( void )
                 {
                     TCB_t *pxTask = (TCB_t *) listGET_LIST_ITEM_OWNER( pxIterator );
 
-                    if( pxTask->ucGreenClass == GREEN_CLASS_CRITICAL)
+                    if( pxTask->ucGreenClass == CRITICAL )
                     {
                         pxBestTask = pxTask;
                         break; // Critical tasks always run first
@@ -3121,7 +3121,7 @@ void vTaskSwitchContext( void )
                     }
                 }
 
-                if( pxBestTask != NULL && pxBestTask->ucGreenClass == GREEN_CLASS_CRITICAL)
+                if( pxBestTask != NULL && pxBestTask->ucGreenClass == CRITICAL )
                 {
                     break; // stop searching lower priorities
                 }
@@ -3129,11 +3129,6 @@ void vTaskSwitchContext( void )
 
             if( pxBestTask != NULL )
             {
-                printf("Selected task: %s | class=%d | energy=%lu\n",
-                pxBestTask->pcTaskName,
-                pxBestTask->ucGreenClass,
-                pxBestTask->ulEnergyEstimate);
-
                 pxCurrentTCB = pxBestTask;
             }
 

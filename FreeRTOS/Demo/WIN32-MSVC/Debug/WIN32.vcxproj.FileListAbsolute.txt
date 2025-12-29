@@ -1,1 +1,2 @@
 D:\Apps\FreeRTOS 2022\FreeRTOSv202212.01\FreeRTOS\Demo\WIN32-MSVC\Debug\RTOSDemo.exe
+D:\Studying\Fall 2025\ECEN427\FreeRTOS_GreenScheduler_Project\FreeRTOS\Demo\WIN32-MSVC\Debug\RTOSDemo.exe
