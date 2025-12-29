@@ -764,9 +764,16 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
                 else
                 {
                     #if ( configUSE_GREEN_SCHEDULER == 1 )
-                        pxNewTCB->ulEnergyEstimate = 0;
-                        pxNewTCB->ulCpuTime      = 0;
-                        pxNewTCB->ucGreenClass   = 0;
+                    pxNewTCB->ulEnergyEstimate = 0;   // Estimated energy cost of the task
+                    pxNewTCB->ulCpuTime        = 0;   // Accumulated CPU execution time
+
+                    // Assign green class based on task name
+                    if( strcmp(pcName, "CriticalTask") == 0 )
+                        pxNewTCB->ucGreenClass = 0;   // CRITICAL
+                    else if( strcmp(pcName, "NormalTask") == 0 )
+                        pxNewTCB->ucGreenClass = 1;   // NORMAL
+                    else
+                        pxNewTCB->ucGreenClass = 2;   // DEFERRABLE
                     #endif
                 }
             }
@@ -791,11 +798,18 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
                     /* Store the stack location in the TCB. */
                     pxNewTCB->pxStack = pxStack;
                     
-                    #if ( configUSE_GREEN_SCHEDULER == 1 )
-                        pxNewTCB->ulEnergyEstimate = 0;   // Estimated energy cost of the task
-                        pxNewTCB->ulCpuTime      = 0;     // Accumulated CPU execution time
-                        pxNewTCB->ucGreenClass   = 0;     // Task energy class (e.g., critical, normal, deferrable)
-                    #endif
+                #if ( configUSE_GREEN_SCHEDULER == 1 )
+                    pxNewTCB->ulEnergyEstimate = 0;   // Estimated energy cost of the task
+                    pxNewTCB->ulCpuTime        = 0;   // Accumulated CPU execution time
+
+                    // Assign green class based on task name
+                    if( strcmp(pcName, "CriticalTask") == 0 )
+                        pxNewTCB->ucGreenClass = 0;   // CRITICAL
+                    else if( strcmp(pcName, "NormalTask") == 0 )
+                        pxNewTCB->ucGreenClass = 1;   // NORMAL
+                    else
+                        pxNewTCB->ucGreenClass = 2;   // DEFERRABLE
+                #endif
 
                 }
                 else
@@ -2763,29 +2777,13 @@ BaseType_t xTaskIncrementTick( void )
         xTickCount = xConstTickCount;
 
         #if ( configUSE_GREEN_SCHEDULER == 1 )
-            if( pxCurrentTCB != NULL )
+            if( pxCurrentTCB != NULL && pxCurrentTCB != xIdleTaskHandle )
             {
-                // Increment CPU time
-                pxCurrentTCB->ulCpuTime += 1;
-
-                // Update energy estimate based on green class
-                switch( pxCurrentTCB->ucGreenClass )
-                {
-                    case 0: // CRITICAL
-                        pxCurrentTCB->ulEnergyEstimate += 2;
-                        break;
-                    case 1: // NORMAL
-                        pxCurrentTCB->ulEnergyEstimate += 1;
-                        break;
-                    case 2: // DEFERRABLE
-                        pxCurrentTCB->ulEnergyEstimate += 0;
-                        break;
-                    default:
-                        pxCurrentTCB->ulEnergyEstimate += 1;
-                        break;
-                }
+                pxCurrentTCB->ulCpuTime++;
+                pxCurrentTCB->ulEnergyEstimate++;
             }
         #endif
+
 
         if( xConstTickCount == ( TickType_t ) 0U ) /*lint !e774 'if' does not always evaluate to false as it is looking for an overflow. */
         {
@@ -3095,52 +3093,41 @@ void vTaskSwitchContext( void )
         /* ----------------- GREEN SCHEDULER INTEGRATION ----------------- */
         #if ( configUSE_GREEN_SCHEDULER == 1 )
 
+            /* Find highest priority ready list */
+            UBaseType_t uxPriority;
+            for( uxPriority = configMAX_PRIORITIES - 1; uxPriority > 0; uxPriority-- )
+            {
+                if( listLIST_IS_EMPTY( &pxReadyTasksLists[ uxPriority ] ) == pdFALSE )
+                {
+                    break;
+                }
+            }
+
+            /* Pick lowest-energy task INSIDE this priority */
+            List_t *pxList = &pxReadyTasksLists[ uxPriority ];
+            ListItem_t *pxItem;
             TCB_t *pxBestTask = NULL;
-            UBaseType_t uxLowestEnergy = UINT32_MAX;
+            uint32_t ulLowestEnergy = UINT32_MAX;
 
-            for( UBaseType_t uxPriority = 0; uxPriority < configMAX_PRIORITIES; uxPriority++ )
+            for( pxItem = ( ListItem_t * ) listGET_HEAD_ENTRY( pxList );
+                pxItem != listGET_END_MARKER( pxList );
+                pxItem = listGET_NEXT( pxItem ) )
             {
-                List_t *pxList = &pxReadyTasksLists[ uxPriority ];
-                ListItem_t *pxIterator;
+                TCB_t *pxTask = ( TCB_t * ) listGET_LIST_ITEM_OWNER( pxItem );
 
-                for( pxIterator = (ListItem_t *) listGET_HEAD_ENTRY( pxList );
-                     pxIterator != listGET_END_MARKER( pxList );
-                     pxIterator = listGET_NEXT( pxIterator ) )
+                if( pxTask->ulEnergyEstimate < ulLowestEnergy )
                 {
-                    TCB_t *pxTask = (TCB_t *) listGET_LIST_ITEM_OWNER( pxIterator );
-
-                    if( pxTask->ucGreenClass == GREEN_CLASS_CRITICAL)
-                    {
-                        pxBestTask = pxTask;
-                        break; // Critical tasks always run first
-                    }
-                    else if( pxTask->ulEnergyEstimate < uxLowestEnergy )
-                    {
-                        uxLowestEnergy = pxTask->ulEnergyEstimate;
-                        pxBestTask = pxTask;
-                    }
-                }
-
-                if( pxBestTask != NULL && pxBestTask->ucGreenClass == GREEN_CLASS_CRITICAL)
-                {
-                    break; // stop searching lower priorities
+                    ulLowestEnergy = pxTask->ulEnergyEstimate;
+                    pxBestTask = pxTask;
                 }
             }
 
-            if( pxBestTask != NULL )
-            {
-                printf("Selected task: %s | class=%d | energy=%lu\n",
-                pxBestTask->pcTaskName,
-                pxBestTask->ucGreenClass,
-                pxBestTask->ulEnergyEstimate);
-
-                pxCurrentTCB = pxBestTask;
-            }
+            pxCurrentTCB = pxBestTask;
 
         #else
-            /* Original FreeRTOS scheduler selection */
             taskSELECT_HIGHEST_PRIORITY_TASK();
         #endif
+
         /* --------------------------------------------------------------- */
 
         traceTASK_SWITCHED_IN();
