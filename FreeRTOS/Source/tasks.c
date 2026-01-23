@@ -320,11 +320,14 @@ typedef struct tskTaskControlBlock       /* The old naming convention is used to
     #endif
 
     #if ( configUSE_GREEN_SCHEDULER == 1 )
-    uint32_t ulEnergyEstimate;      /* Estimated energy cost of the task */
-    uint32_t ulCpuTime;             /* Accumulated CPU execution time */
-    uint8_t  ucGreenClass;          /* Task energy class (e.g. critical, normal, deferrable) */
-    uint32_t ulEnergyScore;         /* Tracks the energy efficiency of the task */
-    uint32_t ulLastRunTime;         /* Timestamp of the last time the task ran */
+        uint32_t ulEnergyEstimate;      /* Estimated energy cost of the task */
+        uint32_t ulCpuTime;             /* Accumulated CPU execution time */
+        uint8_t  ucGreenClass;          /* Task energy class (e.g. critical, normal, deferrable) */
+        uint32_t ulEnergyScore;         /* Tracks the energy efficiency of the task */
+        uint32_t ulLastRunTime;         /* Timestamp of the last time the task ran */
+        TickType_t xDeadline;           /* Absolute deadline for the task (0 = no deadline) */
+        TickType_t xSlackTime;          /* Available slack time before deadline */
+        uint8_t ucFrequencyLevel;       /* Simulated CPU frequency level (0=low, 1=med, 2=high) */
     #endif
 } tskTCB;
 
@@ -764,16 +767,36 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
                 else
                 {
                     #if ( configUSE_GREEN_SCHEDULER == 1 )
-                    pxNewTCB->ulEnergyEstimate = 0;   // Estimated energy cost of the task
-                    pxNewTCB->ulCpuTime        = 0;   // Accumulated CPU execution time
+                    {
+                        /* Initialize all green scheduler fields */
+                        pxNewTCB->ulEnergyEstimate = 0;
+                        pxNewTCB->ulCpuTime        = 0;
+                        pxNewTCB->ulEnergyScore    = 0;
+                        pxNewTCB->ulLastRunTime    = 0;
+                        pxNewTCB->xDeadline        = 0;  /* No deadline by default */
+                        pxNewTCB->xSlackTime       = portMAX_DELAY;  /* Maximum slack */
+                        pxNewTCB->ucFrequencyLevel = 2;  /* Start at high frequency */
 
-                    // Assign green class based on task name
-                    if( strcmp(pcName, "CriticalTask") == 0 )
-                        pxNewTCB->ucGreenClass = 0;   // CRITICAL
-                    else if( strcmp(pcName, "NormalTask") == 0 )
-                        pxNewTCB->ucGreenClass = 1;   // NORMAL
-                    else
-                        pxNewTCB->ucGreenClass = 2;   // DEFERRABLE
+                        /* Assign green class based on task priority:
+                         * High priority (>=5) = CRITICAL
+                         * Medium priority (2-4) = NORMAL  
+                         * Low priority (0-1) = DEFERRABLE */
+                        if( uxPriority >= ( configMAX_PRIORITIES - 2 ) )
+                        {
+                            pxNewTCB->ucGreenClass = GREEN_CLASS_CRITICAL;
+                            pxNewTCB->ucFrequencyLevel = 2;  /* Always high freq */
+                        }
+                        else if( uxPriority >= 2 )
+                        {
+                            pxNewTCB->ucGreenClass = GREEN_CLASS_NORMAL;
+                            pxNewTCB->ucFrequencyLevel = 1;  /* Medium freq */
+                        }
+                        else
+                        {
+                            pxNewTCB->ucGreenClass = GREEN_CLASS_DEFERRABLE;
+                            pxNewTCB->ucFrequencyLevel = 0;  /* Low freq (energy saving) */
+                        }
+                    }
                     #endif
                 }
             }
@@ -798,18 +821,38 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
                     /* Store the stack location in the TCB. */
                     pxNewTCB->pxStack = pxStack;
                     
-                #if ( configUSE_GREEN_SCHEDULER == 1 )
-                    pxNewTCB->ulEnergyEstimate = 0;   // Estimated energy cost of the task
-                    pxNewTCB->ulCpuTime        = 0;   // Accumulated CPU execution time
+                    #if ( configUSE_GREEN_SCHEDULER == 1 )
+                    {
+                        /* Initialize all green scheduler fields */
+                        pxNewTCB->ulEnergyEstimate = 0;
+                        pxNewTCB->ulCpuTime        = 0;
+                        pxNewTCB->ulEnergyScore    = 0;
+                        pxNewTCB->ulLastRunTime    = 0;
+                        pxNewTCB->xDeadline        = 0;  /* No deadline by default */
+                        pxNewTCB->xSlackTime       = portMAX_DELAY;  /* Maximum slack */
+                        pxNewTCB->ucFrequencyLevel = 2;  /* Start at high frequency */
 
-                    // Assign green class based on task name
-                    if( strcmp(pcName, "CriticalTask") == 0 )
-                        pxNewTCB->ucGreenClass = 0;   // CRITICAL
-                    else if( strcmp(pcName, "NormalTask") == 0 )
-                        pxNewTCB->ucGreenClass = 1;   // NORMAL
-                    else
-                        pxNewTCB->ucGreenClass = 2;   // DEFERRABLE
-                #endif
+                        /* Assign green class based on task priority:
+                         * High priority (>=5) = CRITICAL
+                         * Medium priority (2-4) = NORMAL  
+                         * Low priority (0-1) = DEFERRABLE */
+                        if( uxPriority >= ( configMAX_PRIORITIES - 2 ) )
+                        {
+                            pxNewTCB->ucGreenClass = GREEN_CLASS_CRITICAL;
+                            pxNewTCB->ucFrequencyLevel = 2;  /* Always high freq */
+                        }
+                        else if( uxPriority >= 2 )
+                        {
+                            pxNewTCB->ucGreenClass = GREEN_CLASS_NORMAL;
+                            pxNewTCB->ucFrequencyLevel = 1;  /* Medium freq */
+                        }
+                        else
+                        {
+                            pxNewTCB->ucGreenClass = GREEN_CLASS_DEFERRABLE;
+                            pxNewTCB->ucFrequencyLevel = 0;  /* Low freq (energy saving) */
+                        }
+                    }
+                    #endif
 
                 }
                 else
@@ -2777,11 +2820,71 @@ BaseType_t xTaskIncrementTick( void )
         xTickCount = xConstTickCount;
 
         #if ( configUSE_GREEN_SCHEDULER == 1 )
-            if( pxCurrentTCB != NULL && pxCurrentTCB != xIdleTaskHandle )
+        {
+            if( ( pxCurrentTCB != NULL ) && ( pxCurrentTCB != xIdleTaskHandle ) )
             {
+                /* Track CPU time and energy consumption */
                 pxCurrentTCB->ulCpuTime++;
-                pxCurrentTCB->ulEnergyEstimate++;
+                pxCurrentTCB->ulLastRunTime = xConstTickCount;
+
+                /* Update slack time if task has a deadline */
+                if( pxCurrentTCB->xDeadline > 0 )
+                {
+                    if( xConstTickCount < pxCurrentTCB->xDeadline )
+                    {
+                        pxCurrentTCB->xSlackTime = pxCurrentTCB->xDeadline - xConstTickCount;
+                    }
+                    else
+                    {
+                        pxCurrentTCB->xSlackTime = 0;  /* Deadline passed */
+                    }
+
+                    /* Dynamic frequency scaling based on slack time:
+                     * - If slack is low (<100 ticks), increase frequency
+                     * - If slack is high (>500 ticks), decrease frequency */
+                    if( pxCurrentTCB->ucGreenClass == GREEN_CLASS_DEFERRABLE )
+                    {
+                        if( pxCurrentTCB->xSlackTime < 100 )
+                        {
+                            pxCurrentTCB->ucFrequencyLevel = 2;  /* Boost to high */
+                        }
+                        else if( pxCurrentTCB->xSlackTime > 500 )
+                        {
+                            pxCurrentTCB->ucFrequencyLevel = 0;  /* Reduce to low */
+                        }
+                        else
+                        {
+                            pxCurrentTCB->ucFrequencyLevel = 1;  /* Medium */
+                        }
+                    }
+                }
+
+                /* Energy model: Power ~ Frequency^2 (simplified DVFS model)
+                 * FrequencyLevel 0 (low):    1 energy unit per tick
+                 * FrequencyLevel 1 (medium): 2 energy units per tick  
+                 * FrequencyLevel 2 (high):   4 energy units per tick */
+                switch( pxCurrentTCB->ucFrequencyLevel )
+                {
+                    case 0:  /* Low frequency - most energy efficient */
+                        pxCurrentTCB->ulEnergyEstimate += 1;
+                        break;
+                    case 1:  /* Medium frequency */
+                        pxCurrentTCB->ulEnergyEstimate += 2;
+                        break;
+                    case 2:  /* High frequency - most power hungry */
+                    default:
+                        pxCurrentTCB->ulEnergyEstimate += 4;
+                        break;
+                }
+
+                /* Update energy score (lower is better - energy per CPU tick) */
+                if( pxCurrentTCB->ulCpuTime > 0 )
+                {
+                    pxCurrentTCB->ulEnergyScore = 
+                        ( pxCurrentTCB->ulEnergyEstimate * 100 ) / pxCurrentTCB->ulCpuTime;
+                }
             }
+        }
         #endif
 
 
@@ -3092,8 +3195,8 @@ void vTaskSwitchContext( void )
 
         /* ----------------- GREEN SCHEDULER INTEGRATION ----------------- */
         #if ( configUSE_GREEN_SCHEDULER == 1 )
-
-            /* Find highest priority ready list */
+        {
+            /* Find highest priority ready list that contains tasks */
             UBaseType_t uxPriority;
             for( uxPriority = configMAX_PRIORITIES - 1; uxPriority > 0; uxPriority-- )
             {
@@ -3103,27 +3206,45 @@ void vTaskSwitchContext( void )
                 }
             }
 
-            /* Pick lowest-energy task INSIDE this priority */
-            List_t *pxList = &pxReadyTasksLists[ uxPriority ];
-            ListItem_t *pxItem;
-            TCB_t *pxBestTask = NULL;
-            uint32_t ulLowestEnergy = UINT32_MAX;
-
-            for( pxItem = ( ListItem_t * ) listGET_HEAD_ENTRY( pxList );
-                pxItem != listGET_END_MARKER( pxList );
-                pxItem = listGET_NEXT( pxItem ) )
+            /* Check if we found a non-empty ready list */
+            if( listLIST_IS_EMPTY( &pxReadyTasksLists[ uxPriority ] ) == pdFALSE )
             {
-                TCB_t *pxTask = ( TCB_t * ) listGET_LIST_ITEM_OWNER( pxItem );
+                /* Pick lowest-energy task INSIDE this priority level */
+                List_t *pxList = &pxReadyTasksLists[ uxPriority ];
+                ListItem_t const *pxItem;
+                TCB_t *pxBestTask = NULL;
+                uint32_t ulLowestEnergy = UINT32_MAX;
 
-                if( pxTask->ulEnergyEstimate < ulLowestEnergy )
+                for( pxItem = ( ListItem_t const * ) listGET_HEAD_ENTRY( pxList );
+                     pxItem != ( ListItem_t const * ) listGET_END_MARKER( pxList );
+                     pxItem = ( ListItem_t const * ) listGET_NEXT( pxItem ) )
                 {
-                    ulLowestEnergy = pxTask->ulEnergyEstimate;
-                    pxBestTask = pxTask;
+                    TCB_t *pxTask = ( TCB_t * ) listGET_LIST_ITEM_OWNER( pxItem );
+
+                    if( pxTask->ulEnergyEstimate < ulLowestEnergy )
+                    {
+                        ulLowestEnergy = pxTask->ulEnergyEstimate;
+                        pxBestTask = pxTask;
+                    }
+                }
+
+                /* Only switch if we found a valid task */
+                if( pxBestTask != NULL )
+                {
+                    pxCurrentTCB = pxBestTask;
+                }
+                else
+                {
+                    /* Fallback to standard scheduler */
+                    taskSELECT_HIGHEST_PRIORITY_TASK();
                 }
             }
-
-            pxCurrentTCB = pxBestTask;
-
+            else
+            {
+                /* No ready tasks found, use standard scheduler (will select idle) */
+                taskSELECT_HIGHEST_PRIORITY_TASK();
+            }
+        }
         #else
             taskSELECT_HIGHEST_PRIORITY_TASK();
         #endif
@@ -5482,6 +5603,209 @@ static void prvAddCurrentTaskToDelayedList( TickType_t xTicksToWait,
     #include "tasks_test_access_functions.h"
 #endif
 
+/*-----------------------------------------------------------*/
+/* GREEN SCHEDULER ENERGY STATISTICS FUNCTIONS */
+/*-----------------------------------------------------------*/
+
+#if ( configUSE_GREEN_SCHEDULER == 1 )
+
+    void vTaskGetGreenSchedulerStats( char * pcWriteBuffer, size_t xBufferLength )
+    {
+        UBaseType_t uxPriority;
+        UBaseType_t uxTaskCount = 0;
+        uint32_t ulTotalEnergy = 0;
+        size_t xOffset = 0;
+        
+        /* Header */
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "\r\n=== GREEN SCHEDULER ENERGY REPORT ===\r\n" );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "%-12s %-8s %-10s %-10s %-8s\r\n",
+            "Task", "Class", "Energy", "CPU Time", "Score" );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "--------------------------------------------\r\n" );
+
+        vTaskSuspendAll();
+        {
+            /* Iterate through all priority levels */
+            for( uxPriority = 0; uxPriority < configMAX_PRIORITIES; uxPriority++ )
+            {
+                List_t * pxList = &pxReadyTasksLists[ uxPriority ];
+                
+                if( listLIST_IS_EMPTY( pxList ) == pdFALSE )
+                {
+                    ListItem_t const * pxItem;
+                    
+                    for( pxItem = ( ListItem_t const * ) listGET_HEAD_ENTRY( pxList );
+                         pxItem != ( ListItem_t const * ) listGET_END_MARKER( pxList );
+                         pxItem = ( ListItem_t const * ) listGET_NEXT( pxItem ) )
+                    {
+                        TCB_t * pxTCB = ( TCB_t * ) listGET_LIST_ITEM_OWNER( pxItem );
+                        const char * pcClassName;
+                        
+                        switch( pxTCB->ucGreenClass )
+                        {
+                            case GREEN_CLASS_CRITICAL:
+                                pcClassName = "CRIT";
+                                break;
+                            case GREEN_CLASS_NORMAL:
+                                pcClassName = "NORM";
+                                break;
+                            case GREEN_CLASS_DEFERRABLE:
+                            default:
+                                pcClassName = "DEFER";
+                                break;
+                        }
+                        
+                        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+                            "%-12s %-8s %-10lu %-10lu %-8lu\r\n",
+                            pxTCB->pcTaskName,
+                            pcClassName,
+                            pxTCB->ulEnergyEstimate,
+                            pxTCB->ulCpuTime,
+                            pxTCB->ulEnergyScore );
+                        
+                        ulTotalEnergy += pxTCB->ulEnergyEstimate;
+                        uxTaskCount++;
+                    }
+                }
+            }
+        }
+        ( void ) xTaskResumeAll();
+
+        /* Summary */
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "--------------------------------------------\r\n" );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "Total Tasks: %lu | Total Energy: %lu\r\n",
+            ( unsigned long ) uxTaskCount, ( unsigned long ) ulTotalEnergy );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "==========================================\r\n" );
+    }
+
+    uint32_t ulTaskGetTotalEnergyConsumed( void )
+    {
+        UBaseType_t uxPriority;
+        uint32_t ulTotalEnergy = 0;
+        
+        vTaskSuspendAll();
+        {
+            for( uxPriority = 0; uxPriority < configMAX_PRIORITIES; uxPriority++ )
+            {
+                List_t * pxList = &pxReadyTasksLists[ uxPriority ];
+                
+                if( listLIST_IS_EMPTY( pxList ) == pdFALSE )
+                {
+                    ListItem_t const * pxItem;
+                    
+                    for( pxItem = ( ListItem_t const * ) listGET_HEAD_ENTRY( pxList );
+                         pxItem != ( ListItem_t const * ) listGET_END_MARKER( pxList );
+                         pxItem = ( ListItem_t const * ) listGET_NEXT( pxItem ) )
+                    {
+                        TCB_t * pxTCB = ( TCB_t * ) listGET_LIST_ITEM_OWNER( pxItem );
+                        ulTotalEnergy += pxTCB->ulEnergyEstimate;
+                    }
+                }
+            }
+        }
+        ( void ) xTaskResumeAll();
+        
+        return ulTotalEnergy;
+    }
+
+    void vTaskSetDeadline( TaskHandle_t xTask, TickType_t xDeadlineTicks )
+    {
+        TCB_t * pxTCB;
+
+        taskENTER_CRITICAL();
+        {
+            pxTCB = prvGetTCBFromHandle( xTask );
+
+            if( pxTCB != NULL )
+            {
+                /* Set absolute deadline from current tick */
+                pxTCB->xDeadline = xTaskGetTickCount() + xDeadlineTicks;
+                pxTCB->xSlackTime = xDeadlineTicks;
+            }
+        }
+        taskEXIT_CRITICAL();
+    }
+
+    TickType_t xTaskGetSlackTime( TaskHandle_t xTask )
+    {
+        TCB_t * pxTCB;
+        TickType_t xSlack;
+
+        taskENTER_CRITICAL();
+        {
+            pxTCB = prvGetTCBFromHandle( xTask );
+
+            if( pxTCB != NULL )
+            {
+                xSlack = pxTCB->xSlackTime;
+            }
+            else
+            {
+                xSlack = 0;
+            }
+        }
+        taskEXIT_CRITICAL();
+
+        return xSlack;
+    }
+
+    void vTaskSetGreenClass( TaskHandle_t xTask, uint8_t ucClass )
+    {
+        TCB_t * pxTCB;
+
+        taskENTER_CRITICAL();
+        {
+            pxTCB = prvGetTCBFromHandle( xTask );
+
+            if( pxTCB != NULL )
+            {
+                pxTCB->ucGreenClass = ucClass;
+
+                /* Update frequency level based on new class */
+                switch( ucClass )
+                {
+                    case GREEN_CLASS_CRITICAL:
+                        pxTCB->ucFrequencyLevel = 2;
+                        break;
+                    case GREEN_CLASS_NORMAL:
+                        pxTCB->ucFrequencyLevel = 1;
+                        break;
+                    case GREEN_CLASS_DEFERRABLE:
+                    default:
+                        pxTCB->ucFrequencyLevel = 0;
+                        break;
+                }
+            }
+        }
+        taskEXIT_CRITICAL();
+    }
+
+    void vTaskResetEnergyStats( TaskHandle_t xTask )
+    {
+        TCB_t * pxTCB;
+
+        taskENTER_CRITICAL();
+        {
+            pxTCB = prvGetTCBFromHandle( xTask );
+
+            if( pxTCB != NULL )
+            {
+                pxTCB->ulEnergyEstimate = 0;
+                pxTCB->ulCpuTime = 0;
+                pxTCB->ulEnergyScore = 0;
+            }
+        }
+        taskEXIT_CRITICAL();
+    }
+
+#endif /* configUSE_GREEN_SCHEDULER */
+
+/*-----------------------------------------------------------*/
 
 #if ( configINCLUDE_FREERTOS_TASK_C_ADDITIONS_H == 1 )
 

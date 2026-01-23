@@ -3103,12 +3103,81 @@ eSleepModeStatus eTaskConfirmSleepModeStatus( void ) PRIVILEGED_FUNCTION;
  */
 TaskHandle_t pvTaskIncrementMutexHeldCount( void ) PRIVILEGED_FUNCTION;
 
+
 /*
  * For internal use only.  Same as vTaskSetTimeOutState(), but without a critical
  * section.
  */
 void vTaskInternalSetTimeOutState( TimeOut_t * const pxTimeOut ) PRIVILEGED_FUNCTION;
 
+/*-----------------------------------------------------------*/
+/* GREEN SCHEDULER API */
+/*-----------------------------------------------------------*/
+
+#if ( configUSE_GREEN_SCHEDULER == 1 )
+
+/**
+ * @brief Get energy statistics for all tasks.
+ *
+ * Generates a formatted string with energy consumption data for each task,
+ * including task name, green class, energy estimate, CPU time, and energy score.
+ *
+ * @param pcWriteBuffer Buffer to write the formatted statistics.
+ * @param xBufferLength Size of the buffer.
+ */
+void vTaskGetGreenSchedulerStats( char * pcWriteBuffer, size_t xBufferLength ) PRIVILEGED_FUNCTION;
+
+/**
+ * @brief Get total energy consumed by all tasks.
+ *
+ * @return Total energy units consumed across all ready tasks.
+ */
+uint32_t ulTaskGetTotalEnergyConsumed( void ) PRIVILEGED_FUNCTION;
+
+/**
+ * @brief Set a deadline for a task.
+ *
+ * Sets an absolute deadline for the specified task. The scheduler will
+ * calculate slack time based on this deadline and adjust frequency scaling
+ * for deferrable tasks accordingly.
+ *
+ * @param xTask Handle to the task. Pass NULL for the calling task.
+ * @param xDeadlineTicks Number of ticks from now until the deadline.
+ */
+void vTaskSetDeadline( TaskHandle_t xTask, TickType_t xDeadlineTicks ) PRIVILEGED_FUNCTION;
+
+/**
+ * @brief Get the current slack time for a task.
+ *
+ * Returns the remaining time before the task's deadline.
+ *
+ * @param xTask Handle to the task. Pass NULL for the calling task.
+ * @return Remaining ticks until deadline, or 0 if deadline passed.
+ */
+TickType_t xTaskGetSlackTime( TaskHandle_t xTask ) PRIVILEGED_FUNCTION;
+
+/**
+ * @brief Set the green class for a task.
+ *
+ * Changes the energy class of a task, which affects its frequency scaling
+ * and energy consumption profile.
+ *
+ * @param xTask Handle to the task. Pass NULL for the calling task.
+ * @param ucClass GREEN_CLASS_CRITICAL (0), GREEN_CLASS_NORMAL (1), or GREEN_CLASS_DEFERRABLE (2).
+ */
+void vTaskSetGreenClass( TaskHandle_t xTask, uint8_t ucClass ) PRIVILEGED_FUNCTION;
+
+/**
+ * @brief Reset energy statistics for a task.
+ *
+ * Clears the energy estimate, CPU time, and energy score counters for
+ * the specified task.
+ *
+ * @param xTask Handle to the task. Pass NULL for the calling task.
+ */
+void vTaskResetEnergyStats( TaskHandle_t xTask ) PRIVILEGED_FUNCTION;
+
+#endif /* configUSE_GREEN_SCHEDULER */
 
 /* *INDENT-OFF* */
 #ifdef __cplusplus
