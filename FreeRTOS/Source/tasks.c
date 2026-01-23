@@ -5690,6 +5690,7 @@ static void prvAddCurrentTaskToDelayedList( TickType_t xTicksToWait,
         
         vTaskSuspendAll();
         {
+            /* Count energy from ready tasks */
             for( uxPriority = 0; uxPriority < configMAX_PRIORITIES; uxPriority++ )
             {
                 List_t * pxList = &pxReadyTasksLists[ uxPriority ];
@@ -5706,6 +5707,26 @@ static void prvAddCurrentTaskToDelayedList( TickType_t xTicksToWait,
                         ulTotalEnergy += pxTCB->ulEnergyEstimate;
                     }
                 }
+            }
+            
+            /* Also count energy from delayed (blocked) tasks */
+            if( pxDelayedTaskList != NULL && listLIST_IS_EMPTY( pxDelayedTaskList ) == pdFALSE )
+            {
+                ListItem_t const * pxItem;
+                
+                for( pxItem = ( ListItem_t const * ) listGET_HEAD_ENTRY( pxDelayedTaskList );
+                     pxItem != ( ListItem_t const * ) listGET_END_MARKER( pxDelayedTaskList );
+                     pxItem = ( ListItem_t const * ) listGET_NEXT( pxItem ) )
+                {
+                    TCB_t * pxTCB = ( TCB_t * ) listGET_LIST_ITEM_OWNER( pxItem );
+                    ulTotalEnergy += pxTCB->ulEnergyEstimate;
+                }
+            }
+            
+            /* Add current running task energy */
+            if( pxCurrentTCB != NULL )
+            {
+                ulTotalEnergy += pxCurrentTCB->ulEnergyEstimate;
             }
         }
         ( void ) xTaskResumeAll();

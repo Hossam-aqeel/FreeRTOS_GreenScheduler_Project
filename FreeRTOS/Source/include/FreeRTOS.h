@@ -1302,12 +1302,14 @@ typedef struct xSTATIC_TCB
         int iDummy22;
     #endif
     #if ( configUSE_GREEN_SCHEDULER == 1 )
-    uint32_t ulDummyGreenEnergyEstimate;
-    uint32_t ulDummyGreenCpuTime;
-    uint8_t  ucDummyGreenClass;
-    uint8_t  ucDummyPadding[3]; /* alignment */
-    uint32_t ulDummyGreenEnergyScore;
-    uint32_t ulDummyGreenLastRunTime;
+        uint32_t ulDummyGreenEnergyEstimate;
+        uint32_t ulDummyGreenCpuTime;
+        uint8_t  ucDummyGreenClass;
+        uint32_t ulDummyGreenEnergyScore;
+        uint32_t ulDummyGreenLastRunTime;
+        TickType_t xDummyDeadline;
+        TickType_t xDummySlackTime;
+        uint8_t ucDummyFrequencyLevel;
     #endif
 } StaticTask_t;
 

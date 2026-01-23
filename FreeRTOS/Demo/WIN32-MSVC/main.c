@@ -73,7 +73,9 @@
  * If mainCREATE_SIMPLE_BLINKY_DEMO_ONLY is not 1 then the comprehensive test and
  * demo application will be built.  The comprehensive test and demo application is
  * implemented and described in main_full.c. */
-#define mainCREATE_SIMPLE_BLINKY_DEMO_ONLY    0
+
+/* Set to 2 to run the Green Scheduler Test Demo */
+#define mainCREATE_SIMPLE_BLINKY_DEMO_ONLY    2
 
 /* This demo uses heap_5.c, and these constants define the sizes of the regions
  * that make up the total heap.  heap_5 is only used for test and example purposes
@@ -97,9 +99,11 @@
 /*
  * main_blinky() is used when mainCREATE_SIMPLE_BLINKY_DEMO_ONLY is set to 1.
  * main_full() is used when mainCREATE_SIMPLE_BLINKY_DEMO_ONLY is set to 0.
+ * main_green_scheduler_test() is used when mainCREATE_SIMPLE_BLINKY_DEMO_ONLY is set to 2.
  */
 extern void main_blinky( void );
 extern void main_full( void );
+extern void main_green_scheduler_test( void );
 
 /*
  * Only the comprehensive demo uses application hook (callback) functions.  See
@@ -221,6 +225,11 @@ int main( void )
         {
             main_blinky();
         }
+    #elif ( mainCREATE_SIMPLE_BLINKY_DEMO_ONLY == 2 )
+        {
+            /* Run the Green Scheduler Test Demo */
+            main_green_scheduler_test();
+        }
     #else
         {
             main_full();
@@ -261,7 +270,7 @@ void vApplicationIdleHook( void )
      * because it is the responsibility of the idle task to clean up memory
      * allocated by the kernel to any task that has since deleted itself. */
 
-    #if ( mainCREATE_SIMPLE_BLINKY_DEMO_ONLY != 1 )
+    #if ( mainCREATE_SIMPLE_BLINKY_DEMO_ONLY == 0 )
         {
             /* Call the idle task processing used by the full demo.  The simple
              * blinky demo does not use the idle task hook. */
@@ -293,9 +302,9 @@ void vApplicationTickHook( void )
     * configUSE_TICK_HOOK is set to 1 in FreeRTOSConfig.h.  User code can be
     * added here, but the tick hook is called from an interrupt context, so
     * code must not attempt to block, and only the interrupt safe FreeRTOS API
-    * functions can be used (those that end in FromISR()). */
+     * functions can be used (those that end in FromISR()). */
 
-    #if ( mainCREATE_SIMPLE_BLINKY_DEMO_ONLY != 1 )
+    #if ( mainCREATE_SIMPLE_BLINKY_DEMO_ONLY == 0 )
         {
             vFullDemoTickHookFunction();
         }
