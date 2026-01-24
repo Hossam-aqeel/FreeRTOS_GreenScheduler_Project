@@ -39,11 +39,49 @@
  * https://www.FreeRTOS.org/a00110.html
  *----------------------------------------------------------*/
 
+/*-----------------------------------------------------------
+ * GREEN SCHEDULER CONFIGURATION
+ *----------------------------------------------------------*/
 #define configUSE_GREEN_SCHEDULER 1
+
 /* Green scheduler task classes */
 #define GREEN_CLASS_CRITICAL     0
 #define GREEN_CLASS_NORMAL       1
 #define GREEN_CLASS_DEFERRABLE   2
+
+/* Configurable Energy Weights (Power ~ Frequency^2 model) */
+#define GREEN_ENERGY_WEIGHT_LOW      1    /* Low frequency: 1 unit/tick */
+#define GREEN_ENERGY_WEIGHT_MED      2    /* Medium frequency: 2 units/tick */
+#define GREEN_ENERGY_WEIGHT_HIGH     4    /* High frequency: 4 units/tick */
+
+/* Thermal Throttling Thresholds (simulated temperature 0-100) */
+#define GREEN_THERMAL_THRESHOLD_WARN     70   /* Start throttling at 70% */
+#define GREEN_THERMAL_THRESHOLD_CRIT     90   /* Force low-freq at 90% */
+#define GREEN_THERMAL_COOLDOWN_RATE      1    /* Temp decrease per idle tick */
+#define GREEN_THERMAL_HEATUP_RATE_LOW    1    /* Temp increase at low freq */
+#define GREEN_THERMAL_HEATUP_RATE_MED    2    /* Temp increase at med freq */
+#define GREEN_THERMAL_HEATUP_RATE_HIGH   4    /* Temp increase at high freq */
+
+/* Battery Level Thresholds (simulated battery 0-100%) */
+#define GREEN_BATTERY_LEVEL_INIT         100  /* Starting battery level */
+#define GREEN_BATTERY_LOW_THRESHOLD      20   /* Aggressive saving below 20% */
+#define GREEN_BATTERY_CRITICAL_THRESHOLD 10   /* Ultra-low-power below 10% */
+#define GREEN_BATTERY_DRAIN_RATE_LOW     1    /* Battery drain at low freq */
+#define GREEN_BATTERY_DRAIN_RATE_MED     2    /* Battery drain at med freq */
+#define GREEN_BATTERY_DRAIN_RATE_HIGH    4    /* Battery drain at high freq */
+
+/* Idle Power States (C-States) */
+#define GREEN_CSTATE_C0_ACTIVE       0    /* CPU active, full power */
+#define GREEN_CSTATE_C1_HALT         1    /* CPU halted, low power */
+#define GREEN_CSTATE_C2_DEEP_SLEEP   2    /* Deep sleep, minimal power */
+#define GREEN_CSTATE_C1_ENERGY       1    /* Energy cost in C1 */
+#define GREEN_CSTATE_C2_ENERGY       0    /* Energy cost in C2 (zero!) */
+
+/* Deadline/EDF Configuration */
+#define GREEN_DEADLINE_BOOST_THRESHOLD   100  /* Boost priority when slack < 100 ticks */
+#define GREEN_DEADLINE_MISS_PENALTY      10   /* Energy penalty for deadline miss */
+
+/*-----------------------------------------------------------*/
 
 #define configUSE_PREEMPTION					1
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION	1

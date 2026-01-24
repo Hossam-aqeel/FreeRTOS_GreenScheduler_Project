@@ -4,6 +4,15 @@
  * This demo creates multiple tasks with different green classes and deadlines
  * to test and demonstrate the energy-aware scheduling features.
  * 
+ * Features demonstrated:
+ * - Energy-aware task scheduling
+ * - Configurable energy weights
+ * - Thermal throttling simulation
+ * - Battery level awareness
+ * - C-State (idle power states) tracking
+ * - Deadline management with EDF-like priority boost
+ * - Baseline comparison mode
+ * 
  * Tasks created:
  * - CriticalTask: High priority, runs frequently (simulates real-time task)
  * - NormalTask: Medium priority, moderate workload
@@ -22,10 +31,37 @@
 #include "timers.h"
 
 /*-----------------------------------------------------------*/
+/* External Green Scheduler API declarations */
+/*-----------------------------------------------------------*/
+#if ( configUSE_GREEN_SCHEDULER == 1 )
+extern void vTaskSetDeadline( TaskHandle_t xTask, TickType_t xDeadlineTicks );
+extern TickType_t xTaskGetSlackTime( TaskHandle_t xTask );
+extern void vTaskSetGreenClass( TaskHandle_t xTask, uint8_t ucClass );
+extern void vTaskResetEnergyStats( TaskHandle_t xTask );
+extern uint32_t ulTaskGetTotalEnergyConsumed( void );
+extern void vTaskGetGreenSchedulerStats( char * pcWriteBuffer, size_t xBufferLength );
+extern void vTaskSetPeriod( TaskHandle_t xTask, TickType_t xPeriodTicks );
+extern uint32_t ulTaskGetDeadlineMisses( TaskHandle_t xTask );
+extern uint32_t ulGetSimulatedTemperature( void );
+extern uint32_t ulGetSimulatedBatteryLevel( void );
+extern void vSetSimulatedBatteryLevel( uint32_t ulLevel );
+extern uint8_t ucGetCurrentCState( void );
+extern void vGetCStateStats( uint32_t *pulC0, uint32_t *pulC1, uint32_t *pulC2 );
+extern uint32_t ulGetTotalSystemEnergy( void );
+extern uint32_t ulGetTotalDeadlineMisses( void );
+extern void vResetGreenSchedulerStats( void );
+extern void vSetBaselineMode( BaseType_t xEnable );
+extern BaseType_t xIsBaselineMode( void );
+extern void vTaskGetEnhancedGreenStats( char * pcWriteBuffer, size_t xBufferLength );
+#endif
+
+/*-----------------------------------------------------------*/
 /* Energy Log File */
 /*-----------------------------------------------------------*/
-#define ENERGY_LOG_FILE    "energy_log.csv"
+#define ENERGY_LOG_FILE         "energy_log.csv"
+#define ENHANCED_LOG_FILE       "enhanced_energy_log.csv"
 static FILE *pxEnergyLogFile = NULL;
+static FILE *pxEnhancedLogFile = NULL;
 
 /*-----------------------------------------------------------*/
 /* Task Priorities */
@@ -158,31 +194,49 @@ static void prvDeferrableTask( void *pvParameters )
 static void prvMonitorTask( void *pvParameters )
 {
     TickType_t xLastWakeTime;
-    static char pcStatsBuffer[ 1024 ];
+    static char pcStatsBuffer[ 2048 ];
     uint32_t ulTotalEnergy;
     static uint32_t ulLastTotalEnergy = 0;
     uint32_t ulEnergyDelta;
     static uint32_t ulReportCount = 0;
-    time_t xCurrentTime;
     
     ( void ) pvParameters;
     
-    /* Open energy log file */
+    /* Open energy log file - basic */
     pxEnergyLogFile = fopen( ENERGY_LOG_FILE, "w" );
     if( pxEnergyLogFile != NULL )
     {
         fprintf( pxEnergyLogFile, "Report,Tick,TotalEnergy,EnergyDelta,CriticalIter,NormalIter,DeferrableIter\n" );
         fflush( pxEnergyLogFile );
-        printf( "Energy log file created: %s\r\n", ENERGY_LOG_FILE );
+        printf( "Basic energy log: %s\r\n", ENERGY_LOG_FILE );
+    }
+    
+    /* Open enhanced log file */
+    pxEnhancedLogFile = fopen( ENHANCED_LOG_FILE, "w" );
+    if( pxEnhancedLogFile != NULL )
+    {
+        fprintf( pxEnhancedLogFile, "Report,Tick,SystemEnergy,Temperature,Battery,C0_Ticks,C1_Ticks,DeadlineMisses,CriticalIter,DeferrableIter\n" );
+        fflush( pxEnhancedLogFile );
+        printf( "Enhanced log: %s\r\n", ENHANCED_LOG_FILE );
     }
     
     printf( "\r\n" );
     printf( "========================================\r\n" );
-    printf( "  GREEN SCHEDULER TEST DEMO STARTED\r\n" );
+    printf( "  GREEN SCHEDULER ENHANCED TEST DEMO\r\n" );
     printf( "========================================\r\n" );
-    printf( "Tasks created with different energy classes.\r\n" );
-    printf( "Energy stats will be printed every 5 seconds.\r\n" );
-    printf( "Energy data logged to: %s\r\n", ENERGY_LOG_FILE );
+    printf( "Features enabled:\r\n" );
+    printf( "  - Configurable energy weights\r\n" );
+    printf( "  - Thermal throttling simulation\r\n" );
+    printf( "  - Battery level awareness\r\n" );
+    printf( "  - C-State power states tracking\r\n" );
+    printf( "  - Deadline management with EDF boost\r\n" );
+    printf( "========================================\r\n" );
+    printf( "Energy weights: Low=%d, Med=%d, High=%d\r\n", 
+            GREEN_ENERGY_WEIGHT_LOW, GREEN_ENERGY_WEIGHT_MED, GREEN_ENERGY_WEIGHT_HIGH );
+    printf( "Thermal thresholds: Warn=%d, Crit=%d\r\n",
+            GREEN_THERMAL_THRESHOLD_WARN, GREEN_THERMAL_THRESHOLD_CRIT );
+    printf( "Battery thresholds: Low=%d%%, Crit=%d%%\r\n",
+            GREEN_BATTERY_LOW_THRESHOLD, GREEN_BATTERY_CRITICAL_THRESHOLD );
     printf( "========================================\r\n\r\n" );
     
     xLastWakeTime = xTaskGetTickCount();
@@ -223,6 +277,21 @@ static void prvMonitorTask( void *pvParameters )
                 {
                     TickType_t xSlack = xTaskGetSlackTime( xDeferrableTaskHandle );
                     printf( "  Deferrable Slack: %lu ticks\r\n", ( unsigned long ) xSlack );
+                    printf( "  Deadline Misses:  %lu\r\n", ( unsigned long ) ulTaskGetDeadlineMisses( xDeferrableTaskHandle ) );
+                }
+                
+                /* Print thermal and battery status */
+                printf( "\r\nSystem Status:\r\n" );
+                printf( "  Temperature:   %lu / 100\r\n", ( unsigned long ) ulGetSimulatedTemperature() );
+                printf( "  Battery Level: %lu%%\r\n", ( unsigned long ) ulGetSimulatedBatteryLevel() );
+                printf( "  C-State:       C%d\r\n", ucGetCurrentCState() );
+                
+                /* Print C-State stats */
+                {
+                    uint32_t ulC0, ulC1, ulC2;
+                    vGetCStateStats( &ulC0, &ulC1, &ulC2 );
+                    printf( "  Time in C0:    %lu ticks (active)\r\n", ( unsigned long ) ulC0 );
+                    printf( "  Time in C1:    %lu ticks (idle)\r\n", ( unsigned long ) ulC1 );
                 }
                 
                 /* Print detailed stats */
@@ -230,7 +299,7 @@ static void prvMonitorTask( void *pvParameters )
                 vTaskGetGreenSchedulerStats( pcStatsBuffer, sizeof( pcStatsBuffer ) );
                 printf( "%s", pcStatsBuffer );
                 
-                /* Log to CSV file */
+                /* Log to CSV file - basic */
                 if( pxEnergyLogFile != NULL )
                 {
                     fprintf( pxEnergyLogFile, "%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
@@ -242,6 +311,25 @@ static void prvMonitorTask( void *pvParameters )
                         ( unsigned long ) ulNormalTaskCounter,
                         ( unsigned long ) ulDeferrableTaskCounter );
                     fflush( pxEnergyLogFile );
+                }
+                
+                /* Log to enhanced CSV file */
+                if( pxEnhancedLogFile != NULL )
+                {
+                    uint32_t ulC0, ulC1, ulC2;
+                    vGetCStateStats( &ulC0, &ulC1, &ulC2 );
+                    fprintf( pxEnhancedLogFile, "%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+                        ( unsigned long ) ulReportCount,
+                        ( unsigned long ) xTaskGetTickCount(),
+                        ( unsigned long ) ulGetTotalSystemEnergy(),
+                        ( unsigned long ) ulGetSimulatedTemperature(),
+                        ( unsigned long ) ulGetSimulatedBatteryLevel(),
+                        ( unsigned long ) ulC0,
+                        ( unsigned long ) ulC1,
+                        ( unsigned long ) ulGetTotalDeadlineMisses(),
+                        ( unsigned long ) ulCriticalTaskCounter,
+                        ( unsigned long ) ulDeferrableTaskCounter );
+                    fflush( pxEnhancedLogFile );
                 }
             }
             #else

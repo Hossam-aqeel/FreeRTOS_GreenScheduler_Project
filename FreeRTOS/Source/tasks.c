@@ -328,6 +328,9 @@ typedef struct tskTaskControlBlock       /* The old naming convention is used to
         TickType_t xDeadline;           /* Absolute deadline for the task (0 = no deadline) */
         TickType_t xSlackTime;          /* Available slack time before deadline */
         uint8_t ucFrequencyLevel;       /* Simulated CPU frequency level (0=low, 1=med, 2=high) */
+        TickType_t xPeriod;             /* Task period for periodic tasks (0 = aperiodic) */
+        uint32_t ulDeadlineMisses;      /* Count of deadline misses */
+        UBaseType_t uxOriginalPriority; /* Original priority before deadline boost */
     #endif
 } tskTCB;
 
@@ -395,6 +398,31 @@ const volatile UBaseType_t uxTopUsedPriority = configMAX_PRIORITIES - 1U;
  * when the scheduler is unsuspended.  The pending ready list itself can only be
  * accessed from a critical section. */
 PRIVILEGED_DATA static volatile UBaseType_t uxSchedulerSuspended = ( UBaseType_t ) pdFALSE;
+
+/*-----------------------------------------------------------*/
+/* GREEN SCHEDULER GLOBAL STATE VARIABLES */
+/*-----------------------------------------------------------*/
+#if ( configUSE_GREEN_SCHEDULER == 1 )
+    /* Thermal simulation (0-100 scale, like percentage) */
+    PRIVILEGED_DATA static volatile uint32_t ulSimulatedTemperature = 25;  /* Room temp start */
+    
+    /* Battery simulation (0-100 percentage) */
+    PRIVILEGED_DATA static volatile uint32_t ulSimulatedBatteryLevel = GREEN_BATTERY_LEVEL_INIT;
+    PRIVILEGED_DATA static volatile uint32_t ulBatteryDrainCounter = 0;
+    
+    /* C-State tracking */
+    PRIVILEGED_DATA static volatile uint8_t ucCurrentCState = GREEN_CSTATE_C0_ACTIVE;
+    PRIVILEGED_DATA static volatile uint32_t ulTimeInC0 = 0;
+    PRIVILEGED_DATA static volatile uint32_t ulTimeInC1 = 0;
+    PRIVILEGED_DATA static volatile uint32_t ulTimeInC2 = 0;
+    
+    /* Global energy tracking */
+    PRIVILEGED_DATA static volatile uint32_t ulTotalSystemEnergy = 0;
+    PRIVILEGED_DATA static volatile uint32_t ulTotalDeadlineMisses = 0;
+    
+    /* Baseline comparison mode */
+    PRIVILEGED_DATA static volatile BaseType_t xBaselineMode = pdFALSE;
+#endif /* configUSE_GREEN_SCHEDULER */
 
 #if ( configGENERATE_RUN_TIME_STATS == 1 )
 
@@ -2821,11 +2849,17 @@ BaseType_t xTaskIncrementTick( void )
 
         #if ( configUSE_GREEN_SCHEDULER == 1 )
         {
+            uint32_t ulEnergyThisTick = 0;
+            uint32_t ulThermalIncrease = 0;
+            uint32_t ulBatteryDrain = 0;
+            
             if( ( pxCurrentTCB != NULL ) && ( pxCurrentTCB != xIdleTaskHandle ) )
             {
                 /* Track CPU time and energy consumption */
                 pxCurrentTCB->ulCpuTime++;
                 pxCurrentTCB->ulLastRunTime = xConstTickCount;
+                ucCurrentCState = GREEN_CSTATE_C0_ACTIVE;
+                ulTimeInC0++;
 
                 /* Update slack time if task has a deadline */
                 if( pxCurrentTCB->xDeadline > 0 )
@@ -2833,15 +2867,38 @@ BaseType_t xTaskIncrementTick( void )
                     if( xConstTickCount < pxCurrentTCB->xDeadline )
                     {
                         pxCurrentTCB->xSlackTime = pxCurrentTCB->xDeadline - xConstTickCount;
+                        
+                        /* Deadline boost: increase priority when slack is low */
+                        if( pxCurrentTCB->xSlackTime < GREEN_DEADLINE_BOOST_THRESHOLD )
+                        {
+                            if( pxCurrentTCB->uxOriginalPriority == 0 )
+                            {
+                                pxCurrentTCB->uxOriginalPriority = pxCurrentTCB->uxPriority;
+                            }
+                            /* Temporarily boost priority */
+                            if( pxCurrentTCB->uxPriority < ( configMAX_PRIORITIES - 1 ) )
+                            {
+                                pxCurrentTCB->uxPriority = configMAX_PRIORITIES - 1;
+                            }
+                        }
                     }
                     else
                     {
-                        pxCurrentTCB->xSlackTime = 0;  /* Deadline passed */
+                        /* Deadline missed! */
+                        pxCurrentTCB->xSlackTime = 0;
+                        pxCurrentTCB->ulDeadlineMisses++;
+                        ulTotalDeadlineMisses++;
+                        pxCurrentTCB->ulEnergyEstimate += GREEN_DEADLINE_MISS_PENALTY;
+                        
+                        /* Restore original priority */
+                        if( pxCurrentTCB->uxOriginalPriority > 0 )
+                        {
+                            pxCurrentTCB->uxPriority = pxCurrentTCB->uxOriginalPriority;
+                            pxCurrentTCB->uxOriginalPriority = 0;
+                        }
                     }
 
-                    /* Dynamic frequency scaling based on slack time:
-                     * - If slack is low (<100 ticks), increase frequency
-                     * - If slack is high (>500 ticks), decrease frequency */
+                    /* Dynamic frequency scaling based on slack time */
                     if( pxCurrentTCB->ucGreenClass == GREEN_CLASS_DEFERRABLE )
                     {
                         if( pxCurrentTCB->xSlackTime < 100 )
@@ -2858,31 +2915,110 @@ BaseType_t xTaskIncrementTick( void )
                         }
                     }
                 }
-
-                /* Energy model: Power ~ Frequency^2 (simplified DVFS model)
-                 * FrequencyLevel 0 (low):    1 energy unit per tick
-                 * FrequencyLevel 1 (medium): 2 energy units per tick  
-                 * FrequencyLevel 2 (high):   4 energy units per tick */
-                switch( pxCurrentTCB->ucFrequencyLevel )
+                
+                /* Battery-aware frequency scaling */
+                if( ulSimulatedBatteryLevel < GREEN_BATTERY_CRITICAL_THRESHOLD )
                 {
-                    case 0:  /* Low frequency - most energy efficient */
-                        pxCurrentTCB->ulEnergyEstimate += 1;
-                        break;
-                    case 1:  /* Medium frequency */
-                        pxCurrentTCB->ulEnergyEstimate += 2;
-                        break;
-                    case 2:  /* High frequency - most power hungry */
-                    default:
-                        pxCurrentTCB->ulEnergyEstimate += 4;
-                        break;
+                    /* Ultra-low-power mode: force low frequency for non-critical */
+                    if( pxCurrentTCB->ucGreenClass != GREEN_CLASS_CRITICAL )
+                    {
+                        pxCurrentTCB->ucFrequencyLevel = 0;
+                    }
+                }
+                else if( ulSimulatedBatteryLevel < GREEN_BATTERY_LOW_THRESHOLD )
+                {
+                    /* Low battery: cap at medium frequency for non-critical */
+                    if( pxCurrentTCB->ucGreenClass == GREEN_CLASS_DEFERRABLE )
+                    {
+                        pxCurrentTCB->ucFrequencyLevel = 0;
+                    }
+                    else if( pxCurrentTCB->ucGreenClass == GREEN_CLASS_NORMAL )
+                    {
+                        if( pxCurrentTCB->ucFrequencyLevel > 1 )
+                        {
+                            pxCurrentTCB->ucFrequencyLevel = 1;
+                        }
+                    }
+                }
+                
+                /* Thermal throttling */
+                if( ulSimulatedTemperature >= GREEN_THERMAL_THRESHOLD_CRIT )
+                {
+                    /* Critical temperature: force low frequency */
+                    pxCurrentTCB->ucFrequencyLevel = 0;
+                }
+                else if( ulSimulatedTemperature >= GREEN_THERMAL_THRESHOLD_WARN )
+                {
+                    /* Warm: cap at medium frequency */
+                    if( pxCurrentTCB->ucFrequencyLevel > 1 )
+                    {
+                        pxCurrentTCB->ucFrequencyLevel = 1;
+                    }
                 }
 
-                /* Update energy score (lower is better - energy per CPU tick) */
+                /* Energy model using configurable weights */
+                switch( pxCurrentTCB->ucFrequencyLevel )
+                {
+                    case 0:  /* Low frequency */
+                        ulEnergyThisTick = GREEN_ENERGY_WEIGHT_LOW;
+                        ulThermalIncrease = GREEN_THERMAL_HEATUP_RATE_LOW;
+                        ulBatteryDrain = GREEN_BATTERY_DRAIN_RATE_LOW;
+                        break;
+                    case 1:  /* Medium frequency */
+                        ulEnergyThisTick = GREEN_ENERGY_WEIGHT_MED;
+                        ulThermalIncrease = GREEN_THERMAL_HEATUP_RATE_MED;
+                        ulBatteryDrain = GREEN_BATTERY_DRAIN_RATE_MED;
+                        break;
+                    case 2:  /* High frequency */
+                    default:
+                        ulEnergyThisTick = GREEN_ENERGY_WEIGHT_HIGH;
+                        ulThermalIncrease = GREEN_THERMAL_HEATUP_RATE_HIGH;
+                        ulBatteryDrain = GREEN_BATTERY_DRAIN_RATE_HIGH;
+                        break;
+                }
+                
+                pxCurrentTCB->ulEnergyEstimate += ulEnergyThisTick;
+                ulTotalSystemEnergy += ulEnergyThisTick;
+                
+                /* Update thermal simulation */
+                if( ulSimulatedTemperature < 100 )
+                {
+                    ulSimulatedTemperature += ulThermalIncrease;
+                    if( ulSimulatedTemperature > 100 ) ulSimulatedTemperature = 100;
+                }
+                
+                /* Update battery simulation (drain every 100 ticks) */
+                ulBatteryDrainCounter += ulBatteryDrain;
+                if( ulBatteryDrainCounter >= 1000 && ulSimulatedBatteryLevel > 0 )
+                {
+                    ulSimulatedBatteryLevel--;
+                    ulBatteryDrainCounter = 0;
+                }
+
+                /* Update energy score (lower is better) */
                 if( pxCurrentTCB->ulCpuTime > 0 )
                 {
                     pxCurrentTCB->ulEnergyScore = 
                         ( pxCurrentTCB->ulEnergyEstimate * 100 ) / pxCurrentTCB->ulCpuTime;
                 }
+            }
+            else
+            {
+                /* Idle - CPU can enter low power state */
+                if( ucCurrentCState == GREEN_CSTATE_C0_ACTIVE )
+                {
+                    ucCurrentCState = GREEN_CSTATE_C1_HALT;
+                }
+                ulTimeInC1++;
+                
+                /* Cool down when idle */
+                if( ulSimulatedTemperature > 25 )
+                {
+                    ulSimulatedTemperature -= GREEN_THERMAL_COOLDOWN_RATE;
+                }
+                
+                /* Minimal energy in C1 state */
+                ulTotalSystemEnergy += GREEN_CSTATE_C1_ENERGY;
             }
         }
         #endif
@@ -5819,9 +5955,175 @@ static void prvAddCurrentTaskToDelayedList( TickType_t xTicksToWait,
                 pxTCB->ulEnergyEstimate = 0;
                 pxTCB->ulCpuTime = 0;
                 pxTCB->ulEnergyScore = 0;
+                pxTCB->ulDeadlineMisses = 0;
             }
         }
         taskEXIT_CRITICAL();
+    }
+
+    /* Set task period for periodic tasks */
+    void vTaskSetPeriod( TaskHandle_t xTask, TickType_t xPeriodTicks )
+    {
+        TCB_t * pxTCB;
+
+        taskENTER_CRITICAL();
+        {
+            pxTCB = prvGetTCBFromHandle( xTask );
+
+            if( pxTCB != NULL )
+            {
+                pxTCB->xPeriod = xPeriodTicks;
+            }
+        }
+        taskEXIT_CRITICAL();
+    }
+
+    /* Get number of deadline misses */
+    uint32_t ulTaskGetDeadlineMisses( TaskHandle_t xTask )
+    {
+        TCB_t * pxTCB;
+        uint32_t ulMisses;
+
+        taskENTER_CRITICAL();
+        {
+            pxTCB = prvGetTCBFromHandle( xTask );
+            ulMisses = ( pxTCB != NULL ) ? pxTCB->ulDeadlineMisses : 0;
+        }
+        taskEXIT_CRITICAL();
+
+        return ulMisses;
+    }
+
+    /* Get simulated temperature (0-100) */
+    uint32_t ulGetSimulatedTemperature( void )
+    {
+        return ulSimulatedTemperature;
+    }
+
+    /* Get simulated battery level (0-100%) */
+    uint32_t ulGetSimulatedBatteryLevel( void )
+    {
+        return ulSimulatedBatteryLevel;
+    }
+
+    /* Set simulated battery level (for testing) */
+    void vSetSimulatedBatteryLevel( uint32_t ulLevel )
+    {
+        if( ulLevel <= 100 )
+        {
+            ulSimulatedBatteryLevel = ulLevel;
+        }
+    }
+
+    /* Get current C-State */
+    uint8_t ucGetCurrentCState( void )
+    {
+        return ucCurrentCState;
+    }
+
+    /* Get time spent in each C-State */
+    void vGetCStateStats( uint32_t *pulC0, uint32_t *pulC1, uint32_t *pulC2 )
+    {
+        taskENTER_CRITICAL();
+        {
+            if( pulC0 != NULL ) *pulC0 = ulTimeInC0;
+            if( pulC1 != NULL ) *pulC1 = ulTimeInC1;
+            if( pulC2 != NULL ) *pulC2 = ulTimeInC2;
+        }
+        taskEXIT_CRITICAL();
+    }
+
+    /* Get total system energy consumed */
+    uint32_t ulGetTotalSystemEnergy( void )
+    {
+        return ulTotalSystemEnergy;
+    }
+
+    /* Get total deadline misses across all tasks */
+    uint32_t ulGetTotalDeadlineMisses( void )
+    {
+        return ulTotalDeadlineMisses;
+    }
+
+    /* Reset all Green Scheduler statistics */
+    void vResetGreenSchedulerStats( void )
+    {
+        taskENTER_CRITICAL();
+        {
+            ulTotalSystemEnergy = 0;
+            ulTotalDeadlineMisses = 0;
+            ulTimeInC0 = 0;
+            ulTimeInC1 = 0;
+            ulTimeInC2 = 0;
+            ulSimulatedTemperature = 25;
+            ulSimulatedBatteryLevel = GREEN_BATTERY_LEVEL_INIT;
+            ulBatteryDrainCounter = 0;
+        }
+        taskEXIT_CRITICAL();
+    }
+
+    /* Enable/disable baseline mode (Green Scheduler features off for comparison) */
+    void vSetBaselineMode( BaseType_t xEnable )
+    {
+        xBaselineMode = xEnable;
+    }
+
+    /* Check if baseline mode is active */
+    BaseType_t xIsBaselineMode( void )
+    {
+        return xBaselineMode;
+    }
+
+    /* Enhanced stats including thermal, battery, C-states */
+    void vTaskGetEnhancedGreenStats( char * pcWriteBuffer, size_t xBufferLength )
+    {
+        size_t xOffset = 0;
+        uint32_t ulC0, ulC1, ulC2;
+        
+        vGetCStateStats( &ulC0, &ulC1, &ulC2 );
+        
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "\r\n========== ENHANCED GREEN SCHEDULER STATS ==========\r\n" );
+        
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "\r\n--- System Status ---\r\n" );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  Temperature:     %lu / 100 (Warn: %d, Crit: %d)\r\n",
+            ( unsigned long ) ulSimulatedTemperature, 
+            GREEN_THERMAL_THRESHOLD_WARN, GREEN_THERMAL_THRESHOLD_CRIT );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  Battery Level:   %lu%% (Low: %d%%, Crit: %d%%)\r\n",
+            ( unsigned long ) ulSimulatedBatteryLevel,
+            GREEN_BATTERY_LOW_THRESHOLD, GREEN_BATTERY_CRITICAL_THRESHOLD );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  Current C-State: C%d\r\n", ucCurrentCState );
+        
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "\r\n--- C-State Time Distribution ---\r\n" );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  C0 (Active):     %lu ticks\r\n", ( unsigned long ) ulC0 );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  C1 (Halt):       %lu ticks\r\n", ( unsigned long ) ulC1 );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  C2 (Deep Sleep): %lu ticks\r\n", ( unsigned long ) ulC2 );
+        
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "\r\n--- Energy Summary ---\r\n" );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  Total System Energy: %lu units\r\n", ( unsigned long ) ulTotalSystemEnergy );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  Total Deadline Misses: %lu\r\n", ( unsigned long ) ulTotalDeadlineMisses );
+        
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "\r\n--- Configuration ---\r\n" );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  Energy Weights: Low=%d, Med=%d, High=%d\r\n",
+            GREEN_ENERGY_WEIGHT_LOW, GREEN_ENERGY_WEIGHT_MED, GREEN_ENERGY_WEIGHT_HIGH );
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "  Baseline Mode: %s\r\n", xBaselineMode ? "ON" : "OFF" );
+        
+        xOffset += snprintf( pcWriteBuffer + xOffset, xBufferLength - xOffset,
+            "=====================================================\r\n" );
     }
 
 #endif /* configUSE_GREEN_SCHEDULER */

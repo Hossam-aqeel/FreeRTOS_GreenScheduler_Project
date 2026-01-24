@@ -1310,6 +1310,9 @@ typedef struct xSTATIC_TCB
         TickType_t xDummyDeadline;
         TickType_t xDummySlackTime;
         uint8_t ucDummyFrequencyLevel;
+        TickType_t xDummyPeriod;           /* NEW: Task period for deadline management */
+        uint32_t ulDummyDeadlineMisses;    /* NEW: Counter for deadline misses */
+        UBaseType_t uxDummyOriginalPriority; /* NEW: Original priority before EDF boost */
     #endif
 } StaticTask_t;
 
