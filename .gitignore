@@ -12,3 +12,14 @@
 *.pdb
 *.ilk
 *.log
+
+# Build artifacts
+FreeRTOS/Demo/WIN32-MSVC/Debug/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.idb
+*.recipe
+*.tlog
+*.FileListAbsolute.txt
