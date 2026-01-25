@@ -20,15 +20,69 @@
  * - MonitorTask: Prints energy statistics periodically
  */
 
+/*-----------------------------------------------------------*/
+/* Real Hardware Mode - Set to 1 to read actual laptop battery */
+/*-----------------------------------------------------------*/
+#define USE_REAL_HARDWARE_SENSORS   1
+
 /* Standard includes. */
 #include <stdio.h>
 #include <conio.h>
 #include <time.h>
 
+/* Windows includes for real hardware access */
+#include <windows.h>
+
 /* Kernel includes. */
 #include "FreeRTOS.h"
 #include "task.h"
 #include "timers.h"
+
+/*-----------------------------------------------------------*/
+/* Real Hardware Sensor Functions (Windows API)              */
+/*-----------------------------------------------------------*/
+#if ( USE_REAL_HARDWARE_SENSORS == 1 )
+
+/* Read real battery level from Windows */
+static uint32_t ulGetRealBatteryLevel( void )
+{
+    SYSTEM_POWER_STATUS powerStatus;
+    if( GetSystemPowerStatus( &powerStatus ) )
+    {
+        if( powerStatus.BatteryLifePercent != 255 )  /* 255 = unknown */
+        {
+            return ( uint32_t ) powerStatus.BatteryLifePercent;
+        }
+    }
+    return 100;  /* Fallback for desktop PCs without battery */
+}
+
+/* Check if running on AC power or battery */
+static BaseType_t xIsOnBatteryPower( void )
+{
+    SYSTEM_POWER_STATUS powerStatus;
+    if( GetSystemPowerStatus( &powerStatus ) )
+    {
+        return ( powerStatus.ACLineStatus == 0 ) ? pdTRUE : pdFALSE;
+    }
+    return pdFALSE;
+}
+
+/* Get remaining battery time in seconds (-1 if unknown/AC) */
+static int32_t lGetBatteryTimeRemaining( void )
+{
+    SYSTEM_POWER_STATUS powerStatus;
+    if( GetSystemPowerStatus( &powerStatus ) )
+    {
+        if( powerStatus.BatteryLifeTime != 0xFFFFFFFF )
+        {
+            return ( int32_t ) powerStatus.BatteryLifeTime;
+        }
+    }
+    return -1;  /* Unknown */
+}
+
+#endif /* USE_REAL_HARDWARE_SENSORS */
 
 /*-----------------------------------------------------------*/
 /* External Green Scheduler API declarations */
@@ -75,10 +129,17 @@ static FILE *pxEnhancedLogFile = NULL;
 /*-----------------------------------------------------------*/
 /* Task Periods (in milliseconds) */
 /*-----------------------------------------------------------*/
-#define CRITICAL_TASK_PERIOD_MS     pdMS_TO_TICKS( 100 )
-#define NORMAL_TASK_PERIOD_MS       pdMS_TO_TICKS( 250 )
-#define DEFERRABLE_TASK_PERIOD_MS   pdMS_TO_TICKS( 500 )
-#define MONITOR_TASK_PERIOD_MS      pdMS_TO_TICKS( 5000 )  /* Print stats every 5 seconds */
+#define CRITICAL_TASK_PERIOD_MS     pdMS_TO_TICKS( 50 )    /* Faster = more CPU load */
+#define NORMAL_TASK_PERIOD_MS       pdMS_TO_TICKS( 100 )
+#define DEFERRABLE_TASK_PERIOD_MS   pdMS_TO_TICKS( 200 )
+#define MONITOR_TASK_PERIOD_MS      pdMS_TO_TICKS( 3000 )  /* Print stats every 3 seconds */
+
+/*-----------------------------------------------------------*/
+/* Workload Intensity - Increase to stress test scheduler */
+/*-----------------------------------------------------------*/
+#define CRITICAL_WORK_ITERATIONS    50000   /* Heavy CPU work */
+#define NORMAL_WORK_ITERATIONS      30000   /* Moderate work */
+#define DEFERRABLE_WORK_ITERATIONS  20000   /* Light but noticeable */
 
 /*-----------------------------------------------------------*/
 /* Task Handles */
@@ -104,19 +165,23 @@ static void prvCriticalTask( void *pvParameters )
 {
     TickType_t xLastWakeTime;
     volatile uint32_t ulWorkCounter;
+    volatile double dResult = 1.0;  /* Use floating point for real CPU work */
     
     ( void ) pvParameters;
     
     printf( "[CRITICAL] Task started - Class: CRITICAL, Freq: HIGH\r\n" );
+    printf( "           Workload: %d iterations per cycle\r\n", CRITICAL_WORK_ITERATIONS );
     
     xLastWakeTime = xTaskGetTickCount();
     
     for( ;; )
     {
-        /* Simulate CPU-intensive work */
-        for( ulWorkCounter = 0; ulWorkCounter < 1000; ulWorkCounter++ )
+        /* Simulate CPU-intensive work with real computation */
+        for( ulWorkCounter = 0; ulWorkCounter < CRITICAL_WORK_ITERATIONS; ulWorkCounter++ )
         {
-            /* Busy work */
+            /* Real floating-point work that compiler won't optimize away */
+            dResult = dResult * 1.000001 + 0.000001;
+            if( dResult > 1000000.0 ) dResult = 1.0;
         }
         
         ulCriticalTaskCounter++;
@@ -131,19 +196,22 @@ static void prvNormalTask( void *pvParameters )
 {
     TickType_t xLastWakeTime;
     volatile uint32_t ulWorkCounter;
+    volatile double dResult = 1.0;
     
     ( void ) pvParameters;
     
     printf( "[NORMAL] Task started - Class: NORMAL, Freq: MEDIUM\r\n" );
+    printf( "         Workload: %d iterations per cycle\r\n", NORMAL_WORK_ITERATIONS );
     
     xLastWakeTime = xTaskGetTickCount();
     
     for( ;; )
     {
-        /* Simulate moderate work */
-        for( ulWorkCounter = 0; ulWorkCounter < 500; ulWorkCounter++ )
+        /* Simulate moderate work with real computation */
+        for( ulWorkCounter = 0; ulWorkCounter < NORMAL_WORK_ITERATIONS; ulWorkCounter++ )
         {
-            /* Busy work */
+            dResult = dResult * 1.000001 + 0.000001;
+            if( dResult > 1000000.0 ) dResult = 1.0;
         }
         
         ulNormalTaskCounter++;
@@ -158,31 +226,35 @@ static void prvDeferrableTask( void *pvParameters )
 {
     TickType_t xLastWakeTime;
     volatile uint32_t ulWorkCounter;
+    volatile double dResult = 1.0;
     
     ( void ) pvParameters;
     
     printf( "[DEFERRABLE] Task started - Class: DEFERRABLE, Freq: LOW\r\n" );
+    printf( "             Workload: %d iterations per cycle\r\n", DEFERRABLE_WORK_ITERATIONS );
+    printf( "             Deadline: 300ms (tight!)\r\n" );
     
-    /* Set a deadline for this task (1 second from now) */
+    /* Set a TIGHT deadline to trigger EDF priority boosting */
     #if ( configUSE_GREEN_SCHEDULER == 1 )
-    vTaskSetDeadline( NULL, pdMS_TO_TICKS( 1000 ) );
+    vTaskSetDeadline( NULL, pdMS_TO_TICKS( 300 ) );  /* Tight deadline! */
     #endif
     
     xLastWakeTime = xTaskGetTickCount();
     
     for( ;; )
     {
-        /* Simulate light work (can be run at low frequency) */
-        for( ulWorkCounter = 0; ulWorkCounter < 200; ulWorkCounter++ )
+        /* Simulate work that takes noticeable time */
+        for( ulWorkCounter = 0; ulWorkCounter < DEFERRABLE_WORK_ITERATIONS; ulWorkCounter++ )
         {
-            /* Busy work */
+            dResult = dResult * 1.000001 + 0.000001;
+            if( dResult > 1000000.0 ) dResult = 1.0;
         }
         
         ulDeferrableTaskCounter++;
         
-        /* Update deadline for next iteration */
+        /* Update deadline for next iteration - keep it tight */
         #if ( configUSE_GREEN_SCHEDULER == 1 )
-        vTaskSetDeadline( NULL, pdMS_TO_TICKS( 1000 ) );
+        vTaskSetDeadline( NULL, pdMS_TO_TICKS( 300 ) );
         #endif
         
         /* Run periodically */
@@ -230,6 +302,9 @@ static void prvMonitorTask( void *pvParameters )
     printf( "  - Battery level awareness\r\n" );
     printf( "  - C-State power states tracking\r\n" );
     printf( "  - Deadline management with EDF boost\r\n" );
+    #if ( USE_REAL_HARDWARE_SENSORS == 1 )
+    printf( "  - REAL HARDWARE SENSORS ENABLED!\r\n" );
+    #endif
     printf( "========================================\r\n" );
     printf( "Energy weights: Low=%d, Med=%d, High=%d\r\n", 
             GREEN_ENERGY_WEIGHT_LOW, GREEN_ENERGY_WEIGHT_MED, GREEN_ENERGY_WEIGHT_HIGH );
@@ -237,6 +312,11 @@ static void prvMonitorTask( void *pvParameters )
             GREEN_THERMAL_THRESHOLD_WARN, GREEN_THERMAL_THRESHOLD_CRIT );
     printf( "Battery thresholds: Low=%d%%, Crit=%d%%\r\n",
             GREEN_BATTERY_LOW_THRESHOLD, GREEN_BATTERY_CRITICAL_THRESHOLD );
+    #if ( USE_REAL_HARDWARE_SENSORS == 1 )
+    printf( "Real Battery:  %lu%%  (Power: %s)\r\n",
+            ( unsigned long ) ulGetRealBatteryLevel(),
+            xIsOnBatteryPower() ? "BATTERY" : "AC" );
+    #endif
     printf( "========================================\r\n\r\n" );
     
     xLastWakeTime = xTaskGetTickCount();
@@ -284,6 +364,17 @@ static void prvMonitorTask( void *pvParameters )
                 printf( "\r\nSystem Status:\r\n" );
                 printf( "  Temperature:   %lu / 100\r\n", ( unsigned long ) ulGetSimulatedTemperature() );
                 printf( "  Battery Level: %lu%%\r\n", ( unsigned long ) ulGetSimulatedBatteryLevel() );
+                #if ( USE_REAL_HARDWARE_SENSORS == 1 )
+                {
+                    uint32_t ulRealBattery = ulGetRealBatteryLevel();
+                    printf( "  REAL Battery:  %lu%% (%s)\r\n", 
+                            ( unsigned long ) ulRealBattery,
+                            xIsOnBatteryPower() ? "BATTERY" : "AC POWER" );
+                    
+                    /* Sync real battery to scheduler so it affects task behavior! */
+                    vSetSimulatedBatteryLevel( ulRealBattery );
+                }
+                #endif
                 printf( "  C-State:       C%d\r\n", ucGetCurrentCState() );
                 
                 /* Print C-State stats */
